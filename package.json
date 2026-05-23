@@ -5,7 +5,7 @@
   "scripts": {
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
-    "db": "docker run -d --name candlechart-db -p 8000:8000 amazon/dynamodb-local || docker start candlechart-db"
+    "db": "docker run -d --name candlechart-db -p 8000:8000 amazon/dynamodb-local 2>/dev/null || docker start candlechart-db"
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.1053.0",

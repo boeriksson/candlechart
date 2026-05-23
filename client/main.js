@@ -30,6 +30,11 @@ ws.addEventListener('close', () => onStatus({ connected: false, mode: null }));
 function onHistoricalBar(msg) {
   const w = widgets.get(msg.widgetId);
   if (!w) return;
+  if (w.pendingClear) {
+    w.candleSeries.setData([]);
+    w.volumeSeries.setData([]);
+    w.pendingClear = false;
+  }
   w.barCount++;
   w.candleSeries.update(msg.bar);
   w.volumeSeries.update({
@@ -42,7 +47,18 @@ function onHistoricalBar(msg) {
 function onHistoricalDataEnd(msg) {
   const w = widgets.get(msg.widgetId);
   if (!w) return;
-  w.chart.timeScale().fitContent();
+  const el = document.querySelector(`[data-widget-id="${msg.widgetId}"] .widget-chart`);
+  const chartWidth = el ? el.clientWidth : 0;
+  const barsToShow = Math.max(10, Math.floor(chartWidth / 7));
+  const range = w.chart.timeScale().getVisibleLogicalRange();
+  if (range) {
+    w.chart.timeScale().setVisibleLogicalRange({
+      from: range.to - barsToShow,
+      to: range.to,
+    });
+  } else {
+    w.chart.timeScale().fitContent();
+  }
 }
 
 function onRealtimeBar(msg) {
@@ -194,8 +210,7 @@ function resubscribeWidget(id) {
   if (!w) return;
   const tfSelect = document.querySelector(`[data-widget-id="${id}"] .widget-timeframe`);
   w.timeframe = tfSelect.value;
-  w.candleSeries.setData([]);
-  w.volumeSeries.setData([]);
+  w.pendingClear = true;  // clear series on first incoming bar, not now
   w.barCount = 0;
   ws.send(JSON.stringify({ type: 'unsubscribe', widgetId: id }));
   ws.send(JSON.stringify({
@@ -213,7 +228,23 @@ function toggleExpand(id) {
   }
   if (expandedWidgetId !== null) clearExpand();
   expandedWidgetId = id;
-  document.querySelector(`[data-widget-id="${id}"]`).classList.add('widget--expanded');
+  const el = document.querySelector(`[data-widget-id="${id}"]`);
+  el.classList.add('widget--expanded');
+
+  // Wait for ResizeObserver to apply new dimensions, then zoom to tail
+  requestAnimationFrame(() => {
+    const w = widgets.get(id);
+    if (!w) return;
+    const chartWidth = el.querySelector('.widget-chart').clientWidth;
+    const barsToShow = Math.floor(chartWidth / 7);
+    const range = w.chart.timeScale().getVisibleLogicalRange();
+    if (range) {
+      w.chart.timeScale().setVisibleLogicalRange({
+        from: range.to - barsToShow,
+        to: range.to,
+      });
+    }
+  });
 }
 
 function clearExpand() {
