@@ -8,8 +8,9 @@ class IBKRConnection {
     this.connected = false;
     this.mode = 'paper';
     this.reqIdCounter = 1;
-    this.activeReqs = new Map();    // reqId → { widgetId }
-    this.histEndFired = new Map();  // reqId → boolean
+    this.activeReqs = new Map();       // reqId → { widgetId }
+    this.histEndFired = new Map();     // reqId → boolean
+    this.pendingCallbacks = new Map(); // reqId → { bars[], resolve, reject }
 
     this.onStatus = null;
     this.onBar = null;
@@ -57,25 +58,43 @@ class IBKRConnection {
 
       this.ib.on(EventName.historicalData, (reqId, timeStr, open, high, low, close, volume) => {
         const entry = this.activeReqs.get(reqId);
-        if (!entry) return;
-
-        if (String(timeStr).startsWith('finished')) {
-          this._fireHistEnd(reqId);
+        if (entry) {
+          if (String(timeStr).startsWith('finished')) {
+            this._fireHistEnd(reqId);
+          } else {
+            const time = parseIBTime(timeStr);
+            if (!isNaN(time)) {
+              this.onBar?.({ type: 'historicalBar', widgetId: entry.widgetId, bar: {
+                time, open, high, low, close,
+                volume: volume > 0 ? volume : 0,
+              }});
+            }
+          }
           return;
         }
 
-        const time = parseIBTime(timeStr);
-        if (isNaN(time)) return;
-
-        this.onBar?.({ type: 'historicalBar', widgetId: entry.widgetId, bar: {
-          time, open, high, low, close,
-          volume: volume > 0 ? volume : 0,
-        }});
+        const pending = this.pendingCallbacks.get(reqId);
+        if (pending) {
+          if (String(timeStr).startsWith('finished')) {
+            this.pendingCallbacks.delete(reqId);
+            pending.resolve(pending.bars);
+          } else {
+            const time = parseIBTime(timeStr);
+            if (!isNaN(time)) pending.bars.push({ time, open, high, low, close, volume: volume > 0 ? volume : 0 });
+          }
+        }
       });
 
       this.ib.on(EventName.historicalDataEnd, (reqId) => {
-        if (!this.activeReqs.has(reqId)) return;
-        this._fireHistEnd(reqId);
+        if (this.activeReqs.has(reqId)) {
+          this._fireHistEnd(reqId);
+          return;
+        }
+        const pending = this.pendingCallbacks.get(reqId);
+        if (pending) {
+          this.pendingCallbacks.delete(reqId);
+          pending.resolve(pending.bars);
+        }
       });
 
       this.ib.on(EventName.symbolSamples, (reqId, contractDescriptions) => {
@@ -160,12 +179,32 @@ class IBKRConnection {
     this.ib.reqMatchingSymbols(reqId, pattern);
   }
 
+  fetchHistorical(symbol, exchange, currency, duration = '20 Y', timeframe = '1 day') {
+    if (!this.connected) return Promise.reject(new Error('Not connected'));
+    return new Promise((resolve, reject) => {
+      const reqId = this.reqIdCounter++;
+      this.pendingCallbacks.set(reqId, { bars: [], resolve, reject });
+      const contract = { symbol, secType: SecType.STK, exchange, currency };
+      this.ib.reqHistoricalData(reqId, contract, '', duration, timeframe, 'TRADES', 0, 1, false, []);
+      setTimeout(() => {
+        if (this.pendingCallbacks.has(reqId)) {
+          this.pendingCallbacks.delete(reqId);
+          reject(new Error('Historical fetch timeout'));
+        }
+      }, 120000);
+    });
+  }
+
   _cancelAll() {
     for (const [reqId] of this.activeReqs) {
       try { this.ib.cancelHistoricalData(reqId); } catch {}
     }
     this.activeReqs.clear();
     this.histEndFired.clear();
+    for (const [, pending] of this.pendingCallbacks) {
+      pending.reject(new Error('Disconnected'));
+    }
+    this.pendingCallbacks.clear();
   }
 
   disconnect() {

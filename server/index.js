@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import ibkr from './ibkr.js';
 import { initDb, getBars, putBar, isDbAvailable } from './db.js';
+import { runMarkovAnalysis } from './analysis.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -76,6 +77,12 @@ wss.on('connection', (ws) => {
       }
 
       ibkr.subscribe(symbol, exchange, currency, timeframe, widgetId);
+
+      // Fire-and-forget Markov analysis; sends results back via this ws
+      const notify = (type, data) => {
+        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type, ...data }));
+      };
+      runMarkovAnalysis(symbol, exchange, currency, widgetId, notify).catch(() => {});
     }
 
     if (msg.type === 'unsubscribe') {

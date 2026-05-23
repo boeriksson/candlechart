@@ -21,6 +21,8 @@ ws.addEventListener('message', (event) => {
     case 'realtimeBar':    onRealtimeBar(msg); break;
     case 'searchResults':  if (searchEnabled) showDropdown(msg.results); break;
     case 'error':          showToast(msg.message, 'error'); break;
+    case 'analysisStatus': onAnalysisStatus(msg); break;
+    case 'analysisResult': onAnalysisResult(msg); break;
   }
 });
 
@@ -61,6 +63,59 @@ function onHistoricalDataEnd(msg) {
   }
 }
 
+function onAnalysisStatus(msg) {
+  const { widgetId, status, message } = msg;
+  setWidgetOverlay(widgetId, status === 'fetching' || status === 'calculating', message || '');
+}
+
+function onAnalysisResult(msg) {
+  const w = widgets.get(msg.widgetId);
+  if (!w) return;
+  w.markovData = msg;
+  const badge = document.querySelector(`[data-widget-id="${msg.widgetId}"] .widget-state`);
+  if (!badge) return;
+  badge.textContent = msg.currentState;
+  badge.className = `widget-state state-${msg.currentState.toLowerCase()}`;
+}
+
+function setWidgetOverlay(id, visible, message) {
+  const el = document.querySelector(`[data-widget-id="${id}"] .widget-overlay`);
+  if (!el) return;
+  el.classList.toggle('hidden', !visible);
+  el.querySelector('.overlay-msg').textContent = message;
+}
+
+function toggleMarkovPopup(id) {
+  const w = widgets.get(id);
+  if (!w?.markovData) return;
+  const popup = document.querySelector(`[data-widget-id="${id}"] .markov-popup`);
+  if (!popup) return;
+  const opening = popup.classList.contains('hidden');
+  popup.classList.toggle('hidden');
+  if (opening) popup.innerHTML = renderMatrix(w.markovData.transitions);
+}
+
+function renderMatrix(t) {
+  const states = ['BULL', 'BEAR', 'SIDEWAYS'];
+  const rowTotals = states.map(from =>
+    states.reduce((sum, to) => sum + (t[`${from}_${to}`] || 0), 0));
+  const pct = (from, to) => {
+    const total = rowTotals[states.indexOf(from)];
+    return total ? ((t[`${from}_${to}`] || 0) / total * 100).toFixed(0) + '%' : '—';
+  };
+  const color = s => s === 'BULL' ? '#26a69a' : s === 'BEAR' ? '#ef5350' : '#f59e0b';
+  let html = '<table><thead><tr><th>→</th>';
+  states.forEach(s => { html += `<th style="color:${color(s)}">${s}</th>`; });
+  html += '</tr></thead><tbody>';
+  states.forEach((from, i) => {
+    html += `<tr><td style="color:${color(from)}">${from}</td>`;
+    states.forEach(to => { html += `<td>${pct(from, to)}</td>`; });
+    html += '</tr>';
+  });
+  html += '</tbody></table>';
+  return html;
+}
+
 function onRealtimeBar(msg) {
   const w = widgets.get(msg.widgetId);
   if (!w) return;
@@ -88,6 +143,11 @@ function createWidget(symbol, exchange, currency, name) {
   title.className = 'widget-title';
   title.textContent = name ? `${name} (${symbol})  ${exchange} · ${currency}` : `${symbol}  ${exchange} · ${currency}`;
 
+  const stateBadge = document.createElement('span');
+  stateBadge.className = 'widget-state';
+  stateBadge.textContent = '…';
+  stateBadge.addEventListener('click', () => toggleMarkovPopup(id));
+
   const tfSelect = document.createElement('select');
   tfSelect.className = 'widget-timeframe';
   [['1 min','1m'],['5 mins','5m'],['15 mins','15m'],['30 mins','30m'],['1 hour','1h'],['1 day','1D']].forEach(([val, label]) => {
@@ -109,14 +169,24 @@ function createWidget(symbol, exchange, currency, name) {
   closeBtn.textContent = '×';
 
   header.appendChild(title);
+  header.appendChild(stateBadge);
   header.appendChild(tfSelect);
   header.appendChild(expandBtn);
   header.appendChild(closeBtn);
+
+  const overlay = document.createElement('div');
+  overlay.className = 'widget-overlay hidden';
+  overlay.innerHTML = '<div class="spinner"></div><span class="overlay-msg"></span>';
+
+  const markovPopup = document.createElement('div');
+  markovPopup.className = 'markov-popup hidden';
 
   const chartDiv = document.createElement('div');
   chartDiv.className = 'widget-chart';
 
   widget.appendChild(header);
+  widget.appendChild(overlay);
+  widget.appendChild(markovPopup);
   widget.appendChild(chartDiv);
   document.getElementById('widget-grid').appendChild(widget);
 
@@ -174,6 +244,7 @@ function createWidget(symbol, exchange, currency, name) {
     timeframe: '5 mins',
     chart, candleSeries, volumeSeries,
     barCount: 0, observer,
+    markovData: null,
   });
 
   // Wire events
@@ -339,6 +410,9 @@ document.getElementById('symbol-input').addEventListener('keydown', (e) => {
 
 document.addEventListener('mousedown', (e) => {
   if (!e.target.closest('.search-wrap')) hideDropdown();
+  if (!e.target.closest('.markov-popup') && !e.target.closest('.widget-state')) {
+    document.querySelectorAll('.markov-popup:not(.hidden)').forEach(el => el.classList.add('hidden'));
+  }
 });
 
 function showDropdown(results) {
