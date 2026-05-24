@@ -25,10 +25,36 @@
         <input id="symbol-input" type="text" placeholder="Search symbol or company…" autocomplete="off" maxlength="60" />
         <div id="search-dropdown" class="search-dropdown hidden"></div>
       </div>
+      <div class="divider"></div>
+      <button id="scanner-toggle-btn">Scanner</button>
     </div>
   </header>
 
-  <div id="widget-grid"></div>
+  <div id="main-wrap">
+    <div id="scanner-panel" class="hidden">
+      <div class="scanner-header">
+        <span class="scanner-title">Market Scanner</span>
+      </div>
+      <div class="scanner-controls">
+        <select id="scanner-location">
+          <option value="STK.US">US (all)</option>
+          <option value="STK.NASDAQ">NASDAQ</option>
+          <option value="STK.NYSE">NYSE</option>
+          <option value="STK.EU.SFB">Stockholm (SFB)*</option>
+          <option value="STK.EU">EU (all)*</option>
+        </select>
+        <select id="scanner-code">
+          <option value="MOST_ACTIVE">Most Active</option>
+          <option value="TOP_PERC_GAIN">Top Gainers %</option>
+          <option value="TOP_PERC_LOSE">Top Losers %</option>
+          <option value="MOST_ACTIVE_USD">Most Active $</option>
+        </select>
+        <button id="scanner-scan-btn">Scan</button>
+      </div>
+      <div id="scanner-results"></div>
+    </div>
+    <div id="widget-grid"></div>
+  </div>
 
   <div id="toast" class="toast hidden">
     <span id="toast-msg"></span>

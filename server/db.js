@@ -65,8 +65,14 @@ export async function getBars(symbol, exchange, timeframe) {
     ExpressionAttributeValues: { ':pk': barsPk(symbol, exchange, timeframe) },
     ScanIndexForward: true,
   }));
-  return (result.Items || []).map(({ time, open, high, low, close, volume }) =>
-    ({ time, open, high, low, close, volume }));
+  return (result.Items || []).map(({ time, open, high, low, close, volume }) => {
+    // Auto-fix legacy YYYYMMDD integers stored before parseIBTime was corrected
+    if (time >= 19000101 && time <= 21001231) {
+      const s = String(time);
+      time = Math.floor(new Date(`${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}T00:00:00Z`).getTime() / 1000);
+    }
+    return { time, open, high, low, close, volume };
+  });
 }
 
 export async function putBar(symbol, exchange, timeframe, bar) {

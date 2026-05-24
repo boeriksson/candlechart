@@ -32,6 +32,8 @@ ibkr.onBar = (msg) => {
 ibkr.onHistoricalEnd = (widgetId) => broadcast({ type: 'historicalDataEnd', widgetId });
 ibkr.onError = (message) => broadcast({ type: 'error', message });
 ibkr.onSearchResults = (results) => broadcast({ type: 'searchResults', results });
+ibkr.onScanResult = (result) => broadcast({ type: 'scanResult', result });
+ibkr.onScanComplete = () => broadcast({ type: 'scanComplete' });
 
 wss.on('connection', (ws) => {
   ws.send(JSON.stringify({ type: 'status', connected: ibkr.connected, mode: ibkr.mode }));
@@ -92,6 +94,11 @@ wss.on('connection', (ws) => {
 
     if (msg.type === 'search') {
       ibkr.search(msg.pattern);
+    }
+
+    if (msg.type === 'scanMarket') {
+      broadcast({ type: 'scanStart' });
+      ibkr.scan(msg.location ?? 'STK.SFB', msg.scanCode ?? 'TOP_VOLUME');
     }
   });
 });

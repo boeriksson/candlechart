@@ -1,4 +1,4 @@
-import { IBApi, EventName, SecType } from '@stoqey/ib';
+import { IBApi, EventName, SecType, ScanCode } from '@stoqey/ib';
 
 const PORTS = { paper: 4002, live: 4001 };
 
@@ -18,6 +18,10 @@ class IBKRConnection {
     this.onError = null;
     this.onSearchResults = null;
     this.searchReqId = null;
+    this.onScanResult = null;
+    this.onScanComplete = null;
+    this.scannerReqId = null;
+    this._scanBuffer = [];
   }
 
   connect(mode = 'paper') {
@@ -53,7 +57,9 @@ class IBKRConnection {
 
       this.ib.on(EventName.error, (err, code) => {
         if ([2104, 2106, 2158, 2119].includes(code)) return;
-        this.onError?.(`${err?.message ?? err} (code: ${code})`);
+        const msg = err?.message ?? String(err);
+        if (code === 162 && msg.includes('cancelled')) return;
+        this.onError?.(`${msg} (code: ${code})`);
       });
 
       this.ib.on(EventName.historicalData, (reqId, timeStr, open, high, low, close, volume) => {
@@ -110,6 +116,28 @@ class IBKRConnection {
             currency: cd.contract.currency,
           }));
         this.onSearchResults?.(results);
+      });
+
+      this.ib.on(EventName.scannerData, (reqId, rank, contractDetails) => {
+        if (reqId !== this.scannerReqId) return;
+        const c = contractDetails?.contract;
+        if (!c) return;
+        this._scanBuffer.push({
+          rank,
+          symbol: c.symbol,
+          exchange: 'SMART',
+          currency: c.currency,
+          name: contractDetails.marketName || '',
+        });
+      });
+
+      this.ib.on(EventName.scannerDataEnd, (reqId) => {
+        if (reqId !== this.scannerReqId) return;
+        try { this.ib.cancelScannerSubscription(reqId); } catch {}
+        this.scannerReqId = null;
+        const results = [...this._scanBuffer];
+        this._scanBuffer = [];
+        this._fetchScannerPrices(results).catch(() => { this.onScanComplete?.(); });
       });
 
       this.ib.on(EventName.historicalDataUpdate, (reqId, timeStr, open, high, low, close, volume) => {
@@ -179,6 +207,67 @@ class IBKRConnection {
     this.ib.reqMatchingSymbols(reqId, pattern);
   }
 
+  scan(location, scanCode) {
+    if (!this.connected) { this.onError?.('Not connected'); return; }
+    if (this.scannerReqId !== null) {
+      try { this.ib.cancelScannerSubscription(this.scannerReqId); } catch {}
+    }
+    this._scanBuffer = [];
+    const reqId = this.reqIdCounter++;
+    this.scannerReqId = reqId;
+    this.ib.reqScannerSubscription(reqId, {
+      numberOfRows: 20,
+      instrument: 'STK',
+      locationCode: location,
+      scanCode: ScanCode[scanCode],  // encoder reverse-maps numeric → string for wire
+      stockTypeFilter: 'ALL',
+    }, []);
+  }
+
+  _fetchContractName(symbol, currency) {
+    return new Promise((resolve) => {
+      const reqId = this.reqIdCounter++;
+      let name = '';
+      const onDetails = (id, details) => {
+        if (id !== reqId) return;
+        name = details.longName || '';
+      };
+      const onEnd = (id) => {
+        if (id !== reqId) return;
+        this.ib.removeListener(EventName.contractDetails, onDetails);
+        this.ib.removeListener(EventName.contractDetailsEnd, onEnd);
+        resolve(name);
+      };
+      this.ib.on(EventName.contractDetails, onDetails);
+      this.ib.on(EventName.contractDetailsEnd, onEnd);
+      this.ib.reqContractDetails(reqId, { symbol, secType: SecType.STK, exchange: 'SMART', currency });
+      setTimeout(() => {
+        this.ib.removeListener(EventName.contractDetails, onDetails);
+        this.ib.removeListener(EventName.contractDetailsEnd, onEnd);
+        resolve(name);
+      }, 4000);
+    });
+  }
+
+  async _fetchScannerPrices(results) {
+    for (const r of results) {
+      r.name = await this._fetchContractName(r.symbol, r.currency);
+      try {
+        const bars = await this.fetchHistorical(r.symbol, r.exchange, r.currency, '5 D', '1 day');
+        if (bars.length >= 2) {
+          r.price = bars[bars.length - 1].close;
+          r.change = (bars[bars.length - 1].close - bars[bars.length - 2].close) / bars[bars.length - 2].close * 100;
+        } else if (bars.length === 1) {
+          r.price = bars[0].close;
+          r.change = 0;
+        }
+      } catch {}
+      this.onScanResult?.(r);
+      await new Promise(res => setTimeout(res, 200));
+    }
+    this.onScanComplete?.();
+  }
+
   fetchHistorical(symbol, exchange, currency, duration = '20 Y', timeframe = '1 day') {
     if (!this.connected) return Promise.reject(new Error('Not connected'));
     return new Promise((resolve, reject) => {
@@ -205,6 +294,11 @@ class IBKRConnection {
       pending.reject(new Error('Disconnected'));
     }
     this.pendingCallbacks.clear();
+    if (this.scannerReqId !== null) {
+      try { this.ib.cancelScannerSubscription(this.scannerReqId); } catch {}
+      this.scannerReqId = null;
+    }
+    this._scanBuffer = [];
   }
 
   disconnect() {
@@ -219,8 +313,14 @@ class IBKRConnection {
 function parseIBTime(timeStr) {
   const str = String(timeStr);
 
-  // Plain unix timestamp string
-  if (/^\d+$/.test(str)) return parseInt(str, 10);
+  // Plain digits: either YYYYMMDD (daily bars) or Unix timestamp
+  if (/^\d+$/.test(str)) {
+    if (str.length === 8) {
+      // YYYYMMDD — convert to UTC midnight Unix seconds
+      return Math.floor(new Date(`${str.slice(0,4)}-${str.slice(4,6)}-${str.slice(6,8)}T00:00:00Z`).getTime() / 1000);
+    }
+    return parseInt(str, 10);
+  }
 
   const m = str.match(/^(\d{4})(\d{2})(\d{2})\s+(\d{2}):(\d{2}):(\d{2})\s+(.+)$/);
   if (!m) return NaN;
